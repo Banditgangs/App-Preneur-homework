@@ -1,6 +1,204 @@
-NEXUS-OSINT: MASTER PROJE & MÜHENDİSLİK PLANI (MVP v1.0)Tarih: 15 Nisan 2026Hazırlayan: CPO & Chief ArchitectProje Kodu: NX-OSINT-MVPMetodoloji: Agile / Scrum (2 Haftalık Sprintler)1. Executive Summary (Yönetici Özeti)NexusOSINT, siber güvenlik uzmanlarının manuel OSINT süreçlerini otomatize eden, asenkron veri işleme mimarisine dayalı bir B2B SaaS platformudur. İş vizyonumuz, "Time-to-Value" (TTV) metriğini 3 dakikanın altına indirerek pazarda hızlı bir benimsenme (adoption) sağlamaktır. Teknik vizyonumuz ise; FastAPI ve Celery ile yüksek I/O kapasiteli, D3.js ile Canvas tabanlı performanslı bir görselleştirme sunan, Supabase & Next.js ile "Serverless/Managed" altyapının hızını kullanan, yüksek ölçeklenebilir bir sistem inşa etmektir.2. Ürün Vizyonu ve Stratejik KonumlandırmaPazar Konumu: Orta/Üst segment sızma testi uzmanları ve SOC analistleri.Rekabet Avantajı: Veriyi sadece listelemek yerine "Knowledge Graph" (Bilgi Grafiği) ile bağlamsal ilişki kurması ve "Daily Delta" (Günlük Değişim) motoru ile aktif izleme (Hook Modeli) sağlaması.MVP Stratejisi: Pazar penetrasyonu için "Time-to-Market" süresini minimize etmek amacıyla Neo4j veya OCR gibi ağır Ar-Ge kalemleri v1.0 kapsamı dışında bırakılarak mevcut açık kaynak gücü (PostgreSQL JSONB, SpaCy) maksimize edilecektir.3. PRD Analizi ve Teknik Gereksinimlerin Breakdown'uPRD'deki epikler teknik domainlere ayrıştırılmıştır:Ingestion Domain: GitHub ve SerpApi entegrasyonları, rate-limit yönetimi.Processing Domain: SpaCy tabanlı NER, Regex motoru, Güven Skoru hesaplama, AES-256 maskeleme.Presentation Domain: Next.js App Router, React Query cache, D3.js Force Graph.Core Business Domain: Supabase Auth, Stripe Faturalandırma, Cüzdan Ledger'ı.4. Sistem Mimarisi (High-Level Architecture)Sistem Event-Driven Lite bir mimaride tasarlanmıştır:İstemci: Next.js (SSR/CSR hibrit), Vercel üzerinde host edilecek.API Gateway & Core: FastAPI (Uvicorn/Gunicorn), Containerize edilip AWS ECS veya DigitalOcean App Platform'da koşacak.Message Broker & Cache: Redis (Supabase Managed veya AWS ElastiCache).Worker Layer: Celery Workers (Ayrı container'larda scale edilebilir).Persistence Katmanı: PostgreSQL 16 (Supabase Managed).5. Teknoloji Stack GerekçelendirmesiFastAPI: Dış API'lere (GitHub, Serp) yapılacak binlerce request için Python'ın asyncio kütüphanesini native desteklemesi (Django/Flask'a göre 3x-5x I/O performansı).Next.js 14: SEO gereksinimi olmasa da App Router'ın getirdiği Server Components sayesinde dashboard verilerinin sunucuda pre-fetch edilip istemciye yük bindirmemesi.PostgreSQL (JSONB): MVP için Neo4j kurmanın DevOps maliyetini sıfırlamak. İlişkisel verileri targets ve entities tablolarında, grafiğin dinamik özelliklerini (metadata) JSONB kolonunda esnek tutmak.D3.js (Canvas): SVG tabanlı grafikler 300+ node'da tarayıcıyı dondurur. DOM manipülasyonu yerine HTML5 Canvas kullanılarak 1000 node'a kadar 60FPS garanti edilir.6. Modül Bazlı Sistem Tasarımı6.1. Ingestion Engine (Crawler)Adapter Pattern: Dış API'ler (GithubAdapter, SerpApiAdapter) ortak bir BaseScraper interface'inden türetilecektir. Bu, yarın Shodan veya Censys eklendiğinde core logic'i bozmaz.İşlem: Celery worker, hedefi alır, API'lere asenkron HTTP requestleri atar (httpx kütüphanesi ile), ham response'ları toplayıp NLP pipeline'ına iletir.6.2. NLP/NER PipelineHibrit Yaklaşım:Regex Filter: Hızlı sonuç için açık e-postalar ve standart API key formatları regex ile çekilir. (Güven Skoru: %90-100)SpaCy NER: Metin içindeki şirket isimleri ve özel isimler için fine-tune edilmiş hafif bir SpaCy modeli çalışır. (Güven Skoru: %60-80)Shannon Entropy: Şifre hash'lerini bulmak için anlamsız stringlerin entropi değeri hesaplanır. Yüksek entropi = Yüksek ihtimalle Hash/Key.6.3. Graph Engine TasarımıFrontend'in beklediği D3 grafiği için Backend'de bir "Graph Builder" servisi olacaktır.Veritabanındaki ilişkisel tablolar (entities), API katmanında Ağaç (Tree) veya Graf yapısına dönüştürülüp istemciye standart { "nodes": [], "links": [] } formatında servis edilecektir.6.4. Credit & Billing Engineİşlemler Event-Sourced mantığıyla credit_ledger tablosuna yazılır. (Bkz: Madde 19). Stripe Webhook'ları Supabase Edge Functions veya FastAPI /webhooks/stripe üzerinden dinlenir.6.5. Monitoring (Daily Delta)celery-beat kullanılarak her gece 00:00'da cron tetiklenir.targets tablosunda is_monitored=True olan kayıtlar için yeni bir tarama başlatılır. Sonuçlar dünkü tarama ID'si ile diff (fark) işlemine sokulur.7. Veri Akış Diyagramı (Uçtan Uca)[Client] Kullanıcı hedef.com girer -> POST /api/v1/scans[API] Kredi kontrolü -> Bakiye yeterli -> Kredi düş -> Celery Task ID dön (HTTP 202).[Worker] Redis kuyruğundan task'ı alır -> GitHub/SerpAPI'yi tarar.[Worker] Ham veriyi NLP motoruna sokar -> Entity'leri çıkarır.[Worker] Güvenliği kritik verileri AES-256 ile şifreler -> PostgreSQL'e yazar.[Client] Task ID ile polling (veya Server-Sent Events) yaparak tamamlandığını anlar -> Rapor sayfasına geçer.[Client] GET /api/v1/targets/{id}/graph ile veriyi çeker -> D3.js maskelenmiş veriyi render eder.8. Veritabanı Tasarım Stratejisi (Genişletilmiş PRD)Tablo: targets (İndeks: user_id, target_value)Tablo: entitiesGenişletme: GIN Index tanımlanmış metadata (JSONB) kolonu eklenecek. (Örn: GitHub commit tarihi, yazar adı gibi dinamik veriler burada duracak).Tablo: entity_relations (Graph Links için)source_id (UUID)target_id (UUID)relation_type (VARCHAR) -> Örn: "FOUND_IN_REPO"Tablo: credit_ledger (Audit için zorunlu)user_id, transaction_type (DEBIT/CREDIT), amount, reference_id (ilgili scan_id).9. API Lifecycle PlanıVersiyonlama: Tüm route'lar /api/v1/... altında toplanacaktır.Rate Limit: FastAPI slowapi kütüphanesi kullanılarak Redis Token Bucket algoritması ile implemente edilecektir. (Örn: 10 request/dakika per IP/User).Hata Yönetimi: Standart RFC 7807 problem details formatı kullanılacaktır.JSON{ 
-  "type": "https://api.nexus.com/errors/insufficient-credits", 
-  "title": "Bakiye Yetersiz", 
-  "status": 402 
-}
-10. Asenkron İşlem Mimarisi (Celery)Kuyruk Ayrımı:queue_high: Kullanıcının manuel başlattığı anlık taramalar.queue_low: Gece çalışan "Daily Delta" taramaları.Retry Stratejisi: Exponential backoff. (API limiti yendiğinde: 1. deneme 1dk sonra, 2. deneme 5dk sonra, 3. deneme 15dk sonra).11. Edge Case & Failure Management PlanıGitHub Rate Limit: 403 alındığında Celery task'ı autoretry_for=(RateLimitExceeded,) decorator'ı ile beklemeye alınır.SerpApi Timeout: İstek timeout=30.0 ile sınırlanır. Try-except bloğunda yakalanıp, hata loglanır ama genel tarama süreci devam eder. (Partial Failure Handling).Stripe Webhook Mismatches: İletişim koparsa cron job ile günde 1 kez payment_sync task'ı çalıştırılarak ledger tutarsızlıkları düzeltilir.12. Güvenlik MimarisiAuth: Supabase JWT (Stateless). İsteklerde Authorization: Bearer <token> zorunludur.Data Encryption: Veritabanına yazılmadan önce entities.raw_value kolonu Python cryptography kütüphanesi (Fernet veya AES-GCM) ile şifrelenir. Anahtar AWS KMS veya Vault'ta tutulur.Maskeleme (Sanitization): Frontend API'sine yanıt dönmeden önce FastAPI Pydantic middleware'i devreye girer: Şifrelenmiş veriyi çözer, maskeler (Örn: 1A******), frontend'e sadece maskeli halini yollar. Orijinal veri asla tarayıcıya inmez.13. Frontend Architecture PlanıState: Zustand sadece Auth durumunu, User bakiyesini ve o an ekranda seçili olan Node ID'sini (Drawer'a veri geçmek için) tutar.Caching: React Query (useQuery). Graph datasının staleTime'ı 5 dakika ayarlanarak gereksiz API çağrıları önlenir.Graph Rendering: react-force-graph-2d paketi kullanılacak. canvas render modu zorunlu. Performans için node metinleri sadece belirli bir zoom seviyesine inildiğinde render edilecek (LOD - Level of Detail yaklaşımı).14. UI/UX State Management PlanıSuspense Boundaries: Next.js loading.tsx dosyaları ile geçişlerde skeleton loader'lar gösterilecek.Empty State: Rapor sayfası boşsa, bir illüstrasyon ve "İlk hedefini ekle" CTA'i sunulacak.Error Boundaries: Frontend çökmelerine karşı global React Error Boundary eklenecek, kullanıcıya "Bir şeyler ters gitti, sayfayı yenileyin" fallback UI'ı çıkarılacak.15. Sprint Planı (Agile - 6 Haftalık MVP)Sprint 1 (Kurulum & Ingestion): DB şeması, Next.js/FastAPI boilerplate, GitHub Adapter, temel Celery kuyruk yapısı.Sprint 2 (NLP & Storage): SpaCy entegrasyonu, Entity Resolution, Şifreleme/Maskeleme logic'i, Veritabanına yazma.Sprint 3 (API & Graph UI): /graph endpoint'i, D3.js force-graph entegrasyonu, Node ilişkilerinin görselleştirilmesi.Sprint 4 (Hook Model & Billing): Daily Delta cron job'ları, E-posta bildirimleri (Resend/Sendgrid), Stripe entegrasyonu, Ledger mantığı.Sprint 5 (Polish & Export): Delta view (Son 24 saat renk animasyonu), PDF/MD export, UI iyileştirmeleri.Sprint 6 (QA & Soft Launch): E2E testler, Yük testleri, Bugfix, İlk beta kullanıcı alımı.16. Görev Dağılımı (Resource Allocation)Backend Eng: FastAPI mimarisi, Celery taskları, Stripe webhook, REST API geliştirme.Data/NLP Eng: SpaCy fine-tuning, Regex optimizasyonu, Graph algoritması, Crawler rate-limit yönetimi.Frontend Eng: Next.js UI, D3.js canvas optimizasyonu, Zustand/ReactQuery yönetimi.DevOps (Yarı Zamanlı/CPO): Dockerization, GitHub Actions, Supabase/Vercel config.17. DevOps & Deployment PlanıCI/CD: GitHub Actions. Her PR'da pytest ve flake8 çalışır. Main branch'e merge edildiğinde Vercel (Frontend) ve Docker Image build (Backend) triggerlanır.Environment: Development, Staging, Production ortamları. Tüm secret'lar yönetilir.Logging: Backend için yapılandırılmış (structured) JSON logging (structlog). Hatalar Sentry'ye düşer.18. Performans ve Ölçeklenebilirlik PlanıDB Indexing: entities.target_id ve is_ignored kolonlarında B-Tree index olacak. JSONB sorguları için GIN index kullanılacak.Graph Scalability: Eğer dönen düğüm sayısı 1000'i aşarsa, API sadece "Cluster" (Kümelenmiş) düğüm bilgisini dönecek, detaylar kullanıcı cluster'a tıklayınca (Lazy Load) çekilecektir.19. Finansal Sistem Planı (Credit Algorithm)Race Condition (Kritik): Kullanıcı "Tara" tuşuna aynı anda 10 sekmeden basarsa bakiyesi eksiye düşebilir. Çözüm: Redis tabanlı Lock (Mutex) veya PostgreSQL'de SELECT ... FOR UPDATE kullanılarak bakiye düşüm işlemi "Atomic Transaction" içine alınır. İşlem başarısız olursa rollback yapılır.20. Telemetri & Analytics PlanıAraç: PostHog.Event Mapping: * User Signed Up -> Hook başı.Scan Started -> Aktivasyon.Delta Highlight Clicked -> Değer önerisinin kullanımı (Core Value).Node Ignored -> Yanlış Pozitif oranı ölçümü (ML eğitimi için kullanılacak).21. Risk Analizi ve Azaltma (Mitigation)Risk TipiAçıklamaMitigation (Azaltma) StratejisiTeknikGitHub API'sinin bloklanmasıDönüşümlü Proxy/IP havuzu (Rotational Proxies) kullanımı.TeknikNLP'nin çok fazla False-Positive üretmesi"Yoksay" butonu ile gelen feedback'leri toplayıp haftalık model update.BusinessKullanıcıların bedava krediyi bitirip terk etmesiE-posta ile 24 saat sonra "Kaçırdığın 5 zafiyet var, cüzdan yükle" FOMO tetikleyicisi.LegalPII (Kişisel Veri) tutmak KVKK/GDPR ihlali yaratabilir.Verilerin AES-256 ile şifreli tutulması ve "Maskeli" gösterilmesi. Veri silme (Right to be Forgotten) endpoint'i.22. MVP Scope vs Future Roadmap (v1.0 Sonrası)v1.1: Kullanıcıların takımlar halinde (Team Workspace) grafikleri paylaşması.v1.2: Neo4j entegrasyonu (Karmaşık çok katmanlı ilişkiler için).v1.5: Dark Web (Tor) scraping entegrasyonu.23. Lansman PlanıSoft Launch (Hafta 7): Kapalı beta. Tanıdık 20 sızma testi uzmanına (Network'ünden) ömür boyu indirim kodu ile erişim.Feedback Loop: İlk 2 hafta Discord kanalı üzerinden canlı bug bildirimi ve UI iyileştirmeleri.Hard Launch: ProductHunt lansmanı ve Twitter (X) Infosec topluluğunda demo videoları ile dağıtım.24. Sonuç ve Teknik DeğerlendirmeBu plan, PRD'nin teorik vizyonunu, öngörülebilir, ölçülebilir ve yatırımcıya güven verecek bir mühendislik operasyonuna dönüştürmüştür. Sistem, asenkron yapısı sayesinde ağır yükleri tolere edebilirken, Supabase ve Vercel gibi modern altyapılar DevOps eforunu minimize etmektedir. Agile sprint yapısı sayesinde 6 hafta içinde ilk fatura kesilebilir (revenue-generating) ürün canlıda olacaktır.
+NEXUS-OSINT: MASTER PROJE & MÜHENDİSLİK PLANI (MVP v1.0)
+
+**Tarih:** 15 Nisan 2026  
+**Hazırlayan:** CPO & Chief Architect  
+**Proje Kodu:** NX-OSINT-MVP  
+**Metodoloji:** Agile / Scrum (2 Haftalık Sprintler)
+
+---
+
+## 1. Executive Summary (Yönetici Özeti)
+
+NexusOSINT, siber güvenlik uzmanlarının manuel OSINT süreçlerini otomatize eden, asenkron veri işleme mimarisine dayalı bir B2B SaaS platformudur. İş vizyonumuz, "Time-to-Value" (TTV) metriğini 3 dakikanın altına indirerek pazarda hızlı bir benimsenme (adoption) sağlamaktır. Teknik vizyonumuz ise; FastAPI ve Celery ile yüksek I/O kapasiteli, D3.js ile Canvas tabanlı performanslı bir görselleştirme sunan, Supabase & Next.js ile "Serverless/Managed" altyapının hızını kullanan, yüksek ölçeklenebilir bir sistem inşa etmektir.
+
+## 2. Ürün Vizyonu ve Stratejik Konumlandırma
+
+- **Pazar Konumu:** Orta/Üst segment sızma testi uzmanları ve SOC analistleri.
+- **Rekabet Avantajı:** Veriyi sadece listelemek yerine "Knowledge Graph" (Bilgi Grafiği) ile bağlamsal ilişki kurması ve "Daily Delta" (Günlük Değişim) motoru ile aktif izleme (Hook Modeli) sağlaması.
+- **MVP Stratejisi:** Pazar penetrasyonu için "Time-to-Market" süresini minimize etmek amacıyla Neo4j veya OCR gibi ağır Ar-Ge kalemleri v1.0 kapsamı dışında bırakılarak mevcut açık kaynak gücü (PostgreSQL JSONB, SpaCy) maksimize edilecektir.
+
+## 3. PRD Analizi ve Teknik Gereksinimlerin Breakdown'u
+
+PRD'deki epikler teknik domainlere ayrıştırılmıştır:
+
+- **Ingestion Domain:** GitHub ve SerpApi entegrasyonları, rate-limit yönetimi.
+- **Processing Domain:** SpaCy tabanlı NER, Regex motoru, Güven Skoru hesaplama, AES-256 maskeleme.
+- **Presentation Domain:** Next.js App Router, React Query cache, D3.js Force Graph.
+- **Core Business Domain:** Supabase Auth, Stripe Faturalandırma, Cüzdan Ledger'ı.
+
+## 4. Sistem Mimarisi (High-Level Architecture)
+
+Sistem **Event-Driven Lite** bir mimaride tasarlanmıştır:
+
+1. **İstemci:** Next.js (SSR/CSR hibrit), Vercel üzerinde host edilecek.
+2. **API Gateway & Core:** FastAPI (Uvicorn/Gunicorn), Containerize edilip AWS ECS veya DigitalOcean App Platform'da koşacak.
+3. **Message Broker & Cache:** Redis (Supabase Managed veya AWS ElastiCache).
+4. **Worker Layer:** Celery Workers (Ayrı container'larda scale edilebilir).
+5. **Persistence Katmanı:** PostgreSQL 16 (Supabase Managed).
+
+## 5. Teknoloji Stack Gerekçelendirmesi
+
+- **FastAPI:** Dış API'lere (GitHub, Serp) yapılacak binlerce request için Python'ın `asyncio` kütüphanesini native desteklemesi (Django/Flask'a göre 3x-5x I/O performansı).
+- **Next.js 14:** SEO gereksinimi olmasa da App Router'ın getirdiği Server Components sayesinde dashboard verilerinin sunucuda pre-fetch edilip istemciye yük bindirmemesi.
+- **PostgreSQL (JSONB):** MVP için Neo4j kurmanın DevOps maliyetini sıfırlamak. İlişkisel verileri `targets` ve `entities` tablolarında, grafiğin dinamik özelliklerini (metadata) `JSONB` kolonunda esnek tutmak.
+- **D3.js (Canvas):** SVG tabanlı grafikler 300+ node'da tarayıcıyı dondurur. DOM manipülasyonu yerine HTML5 Canvas kullanılarak 1000 node'a kadar 60FPS garanti edilir.
+
+## 6. Modül Bazlı Sistem Tasarımı
+
+### 6.1. Ingestion Engine (Crawler)
+
+- **Adapter Pattern:** Dış API'ler (`GithubAdapter`, `SerpApiAdapter`) ortak bir `BaseScraper` interface'inden türetilecektir. Bu, yarın Shodan veya Censys eklendiğinde core logic'i bozmaz.
+- **İşlem:** Celery worker, hedefi alır, API'lere asenkron HTTP requestleri atar (`httpx` kütüphanesi ile), ham response'ları toplayıp NLP pipeline'ına iletir.
+
+### 6.2. NLP/NER Pipeline
+
+- **Hibrit Yaklaşım:**
+    1. **Regex Filter:** Hızlı sonuç için açık e-postalar ve standart API key formatları regex ile çekilir. (Güven Skoru: %90-100)
+    2. **SpaCy NER:** Metin içindeki şirket isimleri ve özel isimler için fine-tune edilmiş hafif bir SpaCy modeli çalışır. (Güven Skoru: %60-80)
+    3. **Shannon Entropy:** Şifre hash'lerini bulmak için anlamsız stringlerin entropi değeri hesaplanır. Yüksek entropi = Yüksek ihtimalle Hash/Key.
+
+### 6.3. Graph Engine Tasarımı
+
+Frontend'in beklediği D3 grafiği için Backend'de bir "Graph Builder" servisi olacaktır.
+
+- Veritabanındaki ilişkisel tablolar (`entities`), API katmanında Ağaç (Tree) veya Graf yapısına dönüştürülüp istemciye standart `{ "nodes": [], "links": [] }` formatında servis edilecektir.
+
+### 6.4. Credit & Billing Engine
+
+- İşlemler **Event-Sourced** mantığıyla `credit_ledger` tablosuna yazılır. (Bkz: Madde 19). Stripe Webhook'ları Supabase Edge Functions veya FastAPI `/webhooks/stripe` üzerinden dinlenir.
+
+### 6.5. Monitoring (Daily Delta)
+
+- `celery-beat` kullanılarak her gece 00:00'da cron tetiklenir.
+- `targets` tablosunda `is_monitored=True` olan kayıtlar için yeni bir tarama başlatılır. Sonuçlar dünkü tarama ID'si ile diff (fark) işlemine sokulur.
+
+## 7. Veri Akış Diyagramı (Uçtan Uca)
+
+1. **[Client]** Kullanıcı `hedef.com` girer -> `POST /api/v1/scans`
+2. **[API]** Kredi kontrolü -> Bakiye yeterli -> Kredi düş -> Celery Task ID dön (HTTP 202).
+3. **[Worker]** Redis kuyruğundan task'ı alır -> GitHub/SerpAPI'yi tarar.
+4. **[Worker]** Ham veriyi NLP motoruna sokar -> Entity'leri çıkarır.
+5. **[Worker]** Güvenliği kritik verileri AES-256 ile şifreler -> PostgreSQL'e yazar.
+6. **[Client]** Task ID ile polling (veya Server-Sent Events) yaparak tamamlandığını anlar -> Rapor sayfasına geçer.
+7. **[Client]** `GET /api/v1/targets/{id}/graph` ile veriyi çeker -> D3.js maskelenmiş veriyi render eder.
+
+## 8. Veritabanı Tasarım Stratejisi (Genişletilmiş PRD)
+
+- **Tablo:** `targets` (İndeks: `user_id`, `target_value`)
+- **Tablo:** `entities`
+    - Genişletme: GIN Index tanımlanmış `metadata (JSONB)` kolonu eklenecek. (Örn: GitHub commit tarihi, yazar adı gibi dinamik veriler burada duracak).
+- **Tablo:** `entity_relations` (Graph Links için)
+    - `source_id` (UUID)
+    - `target_id` (UUID)
+    - `relation_type` (VARCHAR) -> Örn: "FOUND_IN_REPO"
+- **Tablo:** `credit_ledger` (Audit için zorunlu)
+    - `user_id`, `transaction_type` (DEBIT/CREDIT), `amount`, `reference_id` (ilgili scan_id).
+
+## 9. API Lifecycle Planı
+
+- **Versiyonlama:** Tüm route'lar `/api/v1/...` altında toplanacaktır.
+- **Rate Limit:** FastAPI `slowapi` kütüphanesi kullanılarak Redis Token Bucket algoritması ile implemente edilecektir. (Örn: 10 request/dakika per IP/User).
+- **Hata Yönetimi:** Standart RFC 7807 problem details formatı kullanılacaktır.
+  ```json
+  { 
+    "type": "https://api.nexus.com/errors/insufficient-credits", 
+    "title": "Bakiye Yetersiz", 
+    "status": 402 
+  }
+  ```
+
+## 10. Asenkron İşlem Mimarisi (Celery)
+
+- **Kuyruk Ayrımı:**
+    - `queue_high`: Kullanıcının manuel başlattığı anlık taramalar.
+    - `queue_low`: Gece çalışan "Daily Delta" taramaları.
+- **Retry Stratejisi:** Exponential backoff. (API limiti yendiğinde: 1. deneme 1dk sonra, 2. deneme 5dk sonra, 3. deneme 15dk sonra).
+
+## 11. Edge Case & Failure Management Planı
+
+- **GitHub Rate Limit:** `403` alındığında Celery task'ı `autoretry_for=(RateLimitExceeded,)` decorator'ı ile beklemeye alınır.
+- **SerpApi Timeout:** İstek `timeout=30.0` ile sınırlanır. Try-except bloğunda yakalanıp, hata loglanır ama *genel tarama süreci devam eder*. (Partial Failure Handling).
+- **Stripe Webhook Mismatches:** İletişim koparsa cron job ile günde 1 kez `payment_sync` task'ı çalıştırılarak ledger tutarsızlıkları düzeltilir.
+
+## 12. Güvenlik Mimarisi
+
+- **Auth:** Supabase JWT (Stateless). İsteklerde `Authorization: Bearer <token>` zorunludur.
+- **Data Encryption:** Veritabanına yazılmadan önce `entities.raw_value` kolonu Python `cryptography` kütüphanesi (`Fernet` veya AES-GCM) ile şifrelenir. Anahtar AWS KMS veya Vault'ta tutulur.
+- **Maskeleme (Sanitization):** Frontend API'sine yanıt dönmeden önce FastAPI Pydantic middleware'i devreye girer: Şifrelenmiş veriyi çözer, maskeler (Örn: `1A******`), frontend'e sadece maskeli halini yollar. *Orijinal veri asla tarayıcıya inmez.*
+
+## 13. Frontend Architecture Planı
+
+- **State:** Zustand sadece Auth durumunu, User bakiyesini ve o an ekranda seçili olan Node ID'sini (Drawer'a veri geçmek için) tutar.
+- **Caching:** React Query (`useQuery`). Graph datasının `staleTime`'ı 5 dakika ayarlanarak gereksiz API çağrıları önlenir.
+- **Graph Rendering:** `react-force-graph-2d` paketi kullanılacak. `canvas` render modu zorunlu. Performans için node metinleri sadece belirli bir zoom seviyesine inildiğinde render edilecek (LOD - Level of Detail yaklaşımı).
+
+## 14. UI/UX State Management Planı
+
+- **Suspense Boundaries:** Next.js `loading.tsx` dosyaları ile geçişlerde skeleton loader'lar gösterilecek.
+- **Empty State:** Rapor sayfası boşsa, bir illüstrasyon ve "İlk hedefini ekle" CTA'i sunulacak.
+- **Error Boundaries:** Frontend çökmelerine karşı global React Error Boundary eklenecek, kullanıcıya "Bir şeyler ters gitti, sayfayı yenileyin" fallback UI'ı çıkarılacak.
+
+## 15. Sprint Planı (Agile - 6 Haftalık MVP)
+
+- **Sprint 1 (Kurulum & Ingestion):** DB şeması, Next.js/FastAPI boilerplate, GitHub Adapter, temel Celery kuyruk yapısı.
+- **Sprint 2 (NLP & Storage):** SpaCy entegrasyonu, Entity Resolution, Şifreleme/Maskeleme logic'i, Veritabanına yazma.
+- **Sprint 3 (API & Graph UI):** `/graph` endpoint'i, D3.js force-graph entegrasyonu, Node ilişkilerinin görselleştirilmesi.
+- **Sprint 4 (Hook Model & Billing):** Daily Delta cron job'ları, E-posta bildirimleri (Resend/Sendgrid), Stripe entegrasyonu, Ledger mantığı.
+- **Sprint 5 (Polish & Export):** Delta view (Son 24 saat renk animasyonu), PDF/MD export, UI iyileştirmeleri.
+- **Sprint 6 (QA & Soft Launch):** E2E testler, Yük testleri, Bugfix, İlk beta kullanıcı alımı.
+
+## 16. Görev Dağılımı (Resource Allocation)
+
+- **Backend Eng:** FastAPI mimarisi, Celery taskları, Stripe webhook, REST API geliştirme.
+- **Data/NLP Eng:** SpaCy fine-tuning, Regex optimizasyonu, Graph algoritması, Crawler rate-limit yönetimi.
+- **Frontend Eng:** Next.js UI, D3.js canvas optimizasyonu, Zustand/ReactQuery yönetimi.
+- **DevOps (Yarı Zamanlı/CPO):** Dockerization, GitHub Actions, Supabase/Vercel config.
+
+## 17. DevOps & Deployment Planı
+
+- **CI/CD:** GitHub Actions. Her PR'da `pytest` ve `flake8` çalışır. Main branch'e merge edildiğinde Vercel (Frontend) ve Docker Image build (Backend) triggerlanır.
+- **Environment:** `Development`, `Staging`, `Production` ortamları. Tüm secret'lar yönetilir.
+- **Logging:** Backend için yapılandırılmış (structured) JSON logging (`structlog`). Hatalar **Sentry**'ye düşer.
+
+## 18. Performans ve Ölçeklenebilirlik Planı
+
+- **DB Indexing:** `entities.target_id` ve `is_ignored` kolonlarında B-Tree index olacak. `JSONB` sorguları için GIN index kullanılacak.
+- **Graph Scalability:** Eğer dönen düğüm sayısı 1000'i aşarsa, API sadece "Cluster" (Kümelenmiş) düğüm bilgisini dönecek, detaylar kullanıcı cluster'a tıklayınca (Lazy Load) çekilecektir.
+
+## 19. Finansal Sistem Planı (Credit Algorithm)
+
+- **Race Condition (Kritik):** Kullanıcı "Tara" tuşuna aynı anda 10 sekmeden basarsa bakiyesi eksiye düşebilir. Çözüm: Redis tabanlı Lock (Mutex) veya PostgreSQL'de `SELECT ... FOR UPDATE` kullanılarak bakiye düşüm işlemi "Atomic Transaction" içine alınır. İşlem başarısız olursa rollback yapılır.
+
+## 20. Telemetri & Analytics Planı
+
+- **Araç:** PostHog.
+- **Event Mapping:** 
+    - `User Signed Up` -> Hook başı.
+    - `Scan Started` -> Aktivasyon.
+    - `Delta Highlight Clicked` -> Değer önerisinin kullanımı (Core Value).
+    - `Node Ignored` -> Yanlış Pozitif oranı ölçümü (ML eğitimi için kullanılacak).
+
+## 21. Risk Analizi ve Azaltma (Mitigation)
+
+| Risk Tipi | Açıklama | Mitigation (Azaltma) Stratejisi |
+| :--- | :--- | :--- |
+| Teknik | GitHub API'sinin bloklanması | Dönüşümlü Proxy/IP havuzu (Rotational Proxies) kullanımı. |
+| Teknik | NLP'nin çok fazla False-Positive üretmesi | "Yoksay" butonu ile gelen feedback'leri toplayıp haftalık model update. |
+| Business | Kullanıcıların bedava krediyi bitirip terk etmesi | E-posta ile 24 saat sonra "Kaçırdığın 5 zafiyet var, cüzdan yükle" FOMO tetikleyicisi. |
+| Legal | PII (Kişisel Veri) tutmak KVKK/GDPR ihlali yaratabilir. | Verilerin AES-256 ile şifreli tutulması ve "Maskeli" gösterilmesi. Veri silme (Right to be Forgotten) endpoint'i. |
+
+## 22. MVP Scope vs Future Roadmap (v1.0 Sonrası)
+
+- **v1.1:** Kullanıcıların takımlar halinde (Team Workspace) grafikleri paylaşması.
+- **v1.2:** Neo4j entegrasyonu (Karmaşık çok katmanlı ilişkiler için).
+- **v1.5:** Dark Web (Tor) scraping entegrasyonu.
+
+## 23. Lansman Planı
+
+- **Soft Launch (Hafta 7):** Kapalı beta. Tanıdık 20 sızma testi uzmanına (Network'ünden) ömür boyu indirim kodu ile erişim.
+- **Feedback Loop:** İlk 2 hafta Discord kanalı üzerinden canlı bug bildirimi ve UI iyileştirmeleri.
+- **Hard Launch:** ProductHunt lansmanı ve Twitter (X) Infosec topluluğunda demo videoları ile dağıtım.
+
+## 24. Sonuç ve Teknik Değerlendirme
+
+Bu plan, PRD'nin teorik vizyonunu, öngörülebilir, ölçülebilir ve yatırımcıya güven verecek bir mühendislik operasyonuna dönüştürmüştür. Sistem, asenkron yapısı sayesinde ağır yükleri tolere edebilirken, Supabase ve Vercel gibi modern altyapılar DevOps eforunu minimize etmektedir. Agile sprint yapısı sayesinde 6 hafta içinde ilk fatura kesilebilir (revenue-generating) ürün canlıda olacaktır
