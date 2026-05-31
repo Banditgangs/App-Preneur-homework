@@ -6,7 +6,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: supersecretpassword
+      POSTGRES_PASSWORD: 
       POSTGRES_DB: nexusosint
     ports:
       - "5432:5432"
@@ -26,7 +26,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:supersecretpassword@db:5432/nexusosint
+      - DATABASE_URL={DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
