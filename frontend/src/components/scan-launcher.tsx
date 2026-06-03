@@ -32,8 +32,8 @@ export function ScanLauncher({ onScanStarted }: ScanLauncherProps) {
       
       // 3. Input'u temizle
       setTarget(""); 
-    } catch (err) {
-      setError("API'ye ulaşılamadı. Backend açık mı?");
+    } catch (err: any) {
+      setError(err.message || "API'ye ulaşılamadı. Backend açık mı?");
     } finally {
       setIsLoading(false);
     }

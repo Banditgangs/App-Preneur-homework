@@ -1,7 +1,9 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { X, Shield, Clock, AlertTriangle, Globe, Hash, Tag, ChevronRight } from "lucide-react";
 import { GraphPayload, GraphNode } from "@/types/osint.types";
+import { api } from "@/lib/api";
 
 interface NodeContextPanelProps {
   payload: GraphPayload;
@@ -10,8 +12,8 @@ interface NodeContextPanelProps {
   onBlastRadiusClick?: (nodeId: string) => void;
 }
 
-// Mock OSINT detail generator based on node id + group
-function getMockDetails(node: GraphNode) {
+// Dynamically compute details based on node type and actual label data
+function getDynamicNodeDetails(node: GraphNode) {
   const typeMap: Record<string, { label: string; icon: string; color: string }> = {
     domain:    { label: "Kök Alan Adı",   icon: "🌍", color: "text-blue-400"   },
     ip:        { label: "IP Adresi",      icon: "🖥️", color: "text-emerald-400"},
@@ -24,28 +26,84 @@ function getMockDetails(node: GraphNode) {
     commit:    { label: "Git Commit",     icon: "💾", color: "text-slate-400"  },
     port:      { label: "Açık Servis",    icon: "🔌", color: "text-orange-400" },
     threat:    { label: "Zararlı Aktivite", icon: "☠️", color: "text-red-500"  },
+    malicious_record: { label: "Zafiyet / Tehdit", icon: "☠️", color: "text-red-500" },
   };
   const type = typeMap[node.group ?? ""] ?? { label: "Bilinmeyen Hedef", icon: "❓", color: "text-slate-400" };
 
-  const riskScores: Record<string, { label: string; color: string; badge: string }> = {
-    domain:    { label: "Orta",           color: "text-yellow-400", badge: "bg-yellow-900/40 text-yellow-400 border-yellow-800" },
-    ip:        { label: "Aktif Hedef",    color: "text-blue-400",   badge: "bg-blue-900/40 text-blue-400 border-blue-800" },
-    email:     { label: "Düşük",          color: "text-green-400",  badge: "bg-green-900/40 text-green-400 border-green-800"  },
-    subdomain: { label: "Orta",           color: "text-yellow-400", badge: "bg-yellow-900/40 text-yellow-400 border-yellow-800" },
-    location:  { label: "Düşük",          color: "text-green-400",  badge: "bg-green-900/40 text-green-400 border-green-800"  },
-    social:    { label: "Düşük",          color: "text-green-400",  badge: "bg-green-900/40 text-green-400 border-green-800"  },
-    api_key:   { label: "Kritik",         color: "text-red-500",    badge: "bg-red-900/40 text-red-500 border-red-800"    },
-    hash:      { label: "Yüksek",         color: "text-red-400",    badge: "bg-red-900/40 text-red-400 border-red-800"    },
-    port:      { label: "İnceleme Gerekli", color: "text-orange-400", badge: "bg-orange-900/40 text-orange-400 border-orange-800" },
-    threat:    { label: "KRİTİK TEHDİT",  color: "text-red-500",    badge: "bg-red-900 text-white border-red-500 animate-pulse" },
-  };
-  const risk = riskScores[node.group ?? ""] ?? { label: "Belirsiz", color: "text-slate-400", badge: "bg-slate-900/40 text-slate-400 border-slate-800" };
+  // Default values
+  let risk = { label: "BİLGİ", color: "text-blue-400", badge: "bg-blue-900/40 text-blue-400 border-blue-800" };
+  let rationale = [`OSINT analizi ile tespit edildi: ${node.label}`];
 
-  return { type, risk };
+  // Dynamically analyze based on node group and label content
+  if (node.group === "threat" || node.group === "malicious_record") {
+    const labelUpper = node.label.toUpperCase();
+    if (labelUpper.includes("[CRITICAL]") || labelUpper.includes("CRITICAL:")) {
+      risk = { label: "KRİTİK", color: "text-red-500", badge: "bg-red-900 text-white border-red-500 animate-pulse" };
+      rationale = ["Ağ kritik seviyede tehlikede.", `Tespit Edilen Zafiyet: ${node.label}`];
+    } else if (labelUpper.includes("[HIGH]") || labelUpper.includes("HIGH:")) {
+      risk = { label: "YÜKSEK", color: "text-orange-500", badge: "bg-orange-900/40 text-orange-500 border-orange-800" };
+      rationale = ["Yüksek riskli güvenlik açığı bulundu.", `Detay: ${node.label}`];
+    } else if (labelUpper.includes("[MEDIUM]") || labelUpper.includes("MEDIUM:")) {
+      risk = { label: "ORTA", color: "text-yellow-400", badge: "bg-yellow-900/40 text-yellow-400 border-yellow-800" };
+      rationale = ["Orta seviye risk tespit edildi.", `Detay: ${node.label}`];
+    } else if (labelUpper.includes("[LOW]") || labelUpper.includes("LOW:")) {
+      risk = { label: "DÜŞÜK", color: "text-green-400", badge: "bg-green-900/40 text-green-400 border-green-800" };
+      rationale = ["Düşük öncelikli yapılandırma veya bilgi sızıntısı.", `Detay: ${node.label}`];
+    } else if (labelUpper.includes("[INFO]") || labelUpper.includes("INFO:")) {
+      risk = { label: "BİLGİ", color: "text-blue-400", badge: "bg-blue-900/40 text-blue-400 border-blue-800" };
+      rationale = ["Yalnızca bilgi amaçlı bir kayıt (Zafiyet değil).", `Açıklama: ${node.label}`];
+    } else if (labelUpper.includes("TARGET RESOLUTION FAILED")) {
+      risk = { label: "HATA", color: "text-slate-400", badge: "bg-slate-900/40 text-slate-400 border-slate-800" };
+      rationale = ["Sistem hedefe ulaşamadı veya hedef geçersiz.", "DNS çözümleme başarısız."];
+    } else {
+      risk = { label: "BİLİNMEYEN", color: "text-orange-400", badge: "bg-orange-900/40 text-orange-400 border-orange-800" };
+      rationale = ["Otomatik tarama tarafından zararlı kayıt olarak işaretlendi.", `Log: ${node.label}`];
+    }
+  } else if (node.group === "port") {
+    risk = { label: "BİLGİ", color: "text-blue-400", badge: "bg-blue-900/40 text-blue-400 border-blue-800" };
+    rationale = ["Hedefte açık port/servis keşfedildi.", `Servis Tespiti: ${node.label}`];
+  } else if (node.group === "location") {
+    risk = { label: "BİLGİ", color: "text-green-400", badge: "bg-green-900/40 text-green-400 border-green-800" };
+    rationale = [`IP Geolocation API üzerinden doğrulandı: ${node.label}`];
+  }
+
+  return { type, risk, rationale };
 }
 
 export function NodeContextPanel({ payload, selectedNodeId, onClose, onBlastRadiusClick }: NodeContextPanelProps) {
   const selectedNode = payload?.nodes?.find((n) => n.id === selectedNodeId) ?? null;
+
+  const [aiRationale, setAiRationale] = useState<string | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+
+  useEffect(() => {
+    if (!selectedNodeId) {
+      setAiRationale(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsAiLoading(true);
+    setAiRationale(null);
+
+    api.fetchAiRationale(selectedNodeId)
+      .then((data) => {
+        if (isMounted) {
+          setAiRationale(data.rationale);
+          setIsAiLoading(false);
+        }
+      })
+      .catch((err) => {
+        console.error("AI Rationale Fetch Error:", err);
+        if (isMounted) {
+          setIsAiLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedNodeId]);
 
   // ── EMPTY STATE ──────────────────────────────────────────────────────────────
   if (!selectedNode) {
@@ -79,7 +137,7 @@ export function NodeContextPanel({ payload, selectedNodeId, onClose, onBlastRadi
   }
 
   // ── DETAIL STATE ─────────────────────────────────────────────────────────────
-  const { type, risk } = getMockDetails(selectedNode);
+  const { type, risk, rationale } = getDynamicNodeDetails(selectedNode);
 
   // Akıllı Ayrıştırma: Port bilgisini böl (Örn: "2083/cPanel-HTTPS")
   let portNumber = "";
@@ -161,6 +219,38 @@ export function NodeContextPanel({ payload, selectedNodeId, onClose, onBlastRadi
           <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${risk.badge} shadow-sm`}>
             {risk.label}
           </span>
+        </div>
+
+        {/* Explainable Score Rationale */}
+        <div className="bg-[#050505] border border-slate-800 rounded-lg p-3 mt-2 shadow-inner min-h-[80px]">
+          <p className="text-[9px] uppercase tracking-[0.2em] text-slate-500 mb-2 font-bold flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${isAiLoading ? 'bg-cyan-500 animate-pulse' : 'bg-cyan-500'}`}></span>
+            Güvenilirlik Gerekçesi (AI Rationale)
+          </p>
+          
+          {isAiLoading ? (
+            <div className="space-y-2 py-1">
+              <div className="h-2 bg-slate-800 rounded animate-pulse w-3/4"></div>
+              <div className="h-2 bg-slate-800 rounded animate-pulse w-full"></div>
+              <div className="h-2 bg-slate-800 rounded animate-pulse w-5/6"></div>
+              <p className="text-[10px] text-cyan-600/70 font-mono mt-2 animate-pulse">AI is thinking...</p>
+            </div>
+          ) : aiRationale ? (
+            <p className="text-xs text-slate-300 font-sans leading-relaxed">
+              {aiRationale}
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {rationale.map((reason, idx) => (
+                <li key={idx} className="flex items-start gap-2 text-xs text-slate-400 font-sans leading-snug">
+                  <svg className="w-3.5 h-3.5 text-cyan-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Last seen */}

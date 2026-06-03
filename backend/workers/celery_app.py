@@ -1,4 +1,4 @@
-﻿from celery import Celery
+from celery import Celery
 import os
 
 # İleride Docker Compose'daki Redis servisine bağlanacak, şimdilik varsayılan adresi veriyoruz.
@@ -18,4 +18,10 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="Europe/Istanbul",
     enable_utc=True,
+    beat_schedule={
+        "zero_day_hook_every_5_mins": {
+            "task": "simulate_zero_day_hook",
+            "schedule": 300.0, # 5 dakikada bir çalış (Demonstrasyon için)
+        },
+    }
 )

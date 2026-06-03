@@ -9,8 +9,9 @@ const InvestigationGraph = dynamic(
   { ssr: false }
 );
 import { NodeContextPanel } from "@/components/node-context-panel";
+import { ChatCopilot } from "@/components/chat-copilot";
 import { api, ApiGraphPayload } from "@/lib/api";
-import { Activity, Crosshair, Loader2, Network, ScanLine, Clock } from "lucide-react";
+import { Activity, Crosshair, Loader2, Network, ScanLine, Clock, FileText, FileSpreadsheet, Menu } from "lucide-react";
 
 // QueryClient is stable — created outside the component tree so it's never recreated.
 const queryClient = new QueryClient({
@@ -39,11 +40,15 @@ function toContextPayload(payload: ApiGraphPayload | null) {
 // ─── Inner workspace (needs React Query context) ─────────────────────────────
 function WorkspaceContent() {
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
+  const [isKillChainMode, setIsKillChainMode] = useState(false);
   const [blastRadiusNode, setBlastRadiusNode] = useState<string | null>(null);
   const [timelineDate, setTimelineDate] = useState<number | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -69,6 +74,12 @@ function WorkspaceContent() {
     ws.onmessage = (event) => {
       try {
         const newData = JSON.parse(event.data);
+        if (newData.is_scan_completed) {
+          setIsScanning(false);
+          // Geç gelen Amass/Nuclei SCAN_COMPLETED sinyallerinin hata durumunu (kırmızı ekranı) yeşile çevirmesini engelle
+          setScanError((prev) => prev || newData.has_error === true);
+          return;
+        }
         // HİBRİT MİMARİ: Gelen JSON'u doğrudan React Query'nin Cache'ine enjekte et!
         queryClient.setQueryData(["graph", activeScanId], newData);
       } catch (error) {
@@ -84,6 +95,26 @@ function WorkspaceContent() {
       ws.close();
     };
   }, [activeScanId, queryClient]);
+
+  // ── YENİ: Fallback Polling (Eğer WS sinyali kaçırırsa) ──────────────────────
+  useEffect(() => {
+    if (!activeScanId || !isScanning) return;
+    
+    const intervalId = setInterval(() => {
+      api.fetchTargetStatus(activeScanId)
+        .then((data) => {
+          if (data.status === "COMPLETED") {
+            console.log("[POLLING] Scan marked as COMPLETED via fallback.");
+            setIsScanning(false);
+            // Tüm grafik verilerini tazelemek için önbelleği geçersiz kıl
+            queryClient.invalidateQueries({ queryKey: ["graph", activeScanId] });
+          }
+        })
+        .catch((err) => console.error("Fallback polling error:", err));
+    }, 5000);
+
+    return () => clearInterval(intervalId);
+  }, [activeScanId, isScanning, queryClient]);
 
   const graphPayload: ApiGraphPayload | null = useMemo(
     () => query.data ?? null,
@@ -116,6 +147,16 @@ function WorkspaceContent() {
     }
   }, [timelineBounds, timelineDate]);
 
+  // ── YENİ: Fatal Error Fallback Koruması ────────────────────────────────────
+  // Eğer DNS hatası biz WS'e bağlanmadan önce fırlatılırsa, SCAN_FAILED sinyalini kaçırırız.
+  // Bu yüzden gelen Graf payload'ının içinde hata nodu olup olmadığını kontrol edip durduruyoruz.
+  useEffect(() => {
+    if (graphPayload?.nodes?.some(n => n.label.includes("Target Resolution Failed"))) {
+      setIsScanning(false);
+      setScanError(true);
+    }
+  }, [graphPayload]);
+
   const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
     setIsPanelOpen(true);
@@ -128,24 +169,50 @@ function WorkspaceContent() {
     setBlastRadiusNode(null); // Paneli kapatınca blast radius'u temizle
   }, []);
 
+  /**
+   * ROOT LAYOUT
+   * ┌────────────┬──────────────────────────┬──────────────┐
+   * │ Left (320) │    Center (flex-1)       │ Right (320)  │
+   * │ z-10       │    position:relative     │ z-10         │
+   * │            │    overflow:hidden       │              │
+   * └────────────┴──────────────────────────┴──────────────┘
+   */
   return (
-    /**
-     * ROOT LAYOUT
-     * ┌────────────┬──────────────────────────┬──────────────┐
-     * │ Left (320) │    Center (flex-1)       │ Right (320)  │
-     * │ z-10       │    position:relative     │ z-10         │
-     * │            │    overflow:hidden       │              │
-     * └────────────┴──────────────────────────┴──────────────┘
-     */
-    <div className="h-screen w-screen bg-neutral-950 text-gray-200 overflow-hidden flex font-sans">
+    <div className="h-screen w-screen bg-neutral-950 text-gray-200 overflow-hidden flex flex-col md:flex-row font-sans">
+
+      {/* ── MOBILE TOP BAR ───────────────────────────────────────────────── */}
+      <div className="md:hidden flex items-center justify-between px-4 py-3 border-b border-neutral-800 bg-neutral-900 z-50 shrink-0 shadow-lg">
+        <div className="flex items-center gap-2">
+          <Crosshair className="w-5 h-5 text-blue-500" />
+          <h1 className="text-lg font-black tracking-[0.15em] text-white">
+            NEXUS<span className="text-blue-500">OSINT</span>
+          </h1>
+        </div>
+        <button
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+        >
+          <Menu className="w-6 h-6" />
+        </button>
+      </div>
+
+      {/* ── MOBILE MENU OVERLAY ─────────────────────────────────────────── */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-[55] md:hidden backdrop-blur-sm"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
 
       {/* ── LEFT SIDEBAR ─────────────────────────────────────────────────── */}
       <aside
-        className="
-          w-80 shrink-0 flex flex-col
+        className={`
+          fixed inset-y-0 left-0 z-[60] w-80 flex flex-col
           bg-neutral-900 border-r border-neutral-800
-          shadow-2xl z-10 relative
-        "
+          shadow-2xl transition-transform duration-300 ease-in-out
+          ${isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"}
+          md:relative md:translate-x-0 md:shrink-0
+        `}
       >
         {/* Brand header */}
         <div className="px-6 py-5 border-b border-neutral-800 bg-gradient-to-b from-black/40">
@@ -164,10 +231,13 @@ function WorkspaceContent() {
         <div className="p-5 flex-1 overflow-y-auto space-y-6">
           <ScanLauncher onScanStarted={(id) => {
             setActiveScanId(id);
+            setIsScanning(true);
+            setScanError(false);
             setTimelineDate(null); // KÖK ÇÖZÜM: Yeni taramada eski taramanın zaman kilitlenmesini sıfırla!
             setBlastRadiusNode(null);
             setSelectedNodeId(null);
             setIsPanelOpen(false);
+            setIsMobileMenuOpen(false);
           }} />
 
           {/* Loading status */}
@@ -210,23 +280,70 @@ function WorkspaceContent() {
                 </div>
               </div>
 
-              {/* ── Export Buttons ────────────────────────────────────────────── */}
-              <div className="space-y-2 pt-2 border-t border-neutral-800/50">
-                <a
-                  href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/export/${activeScanId}/pdf`}
-                  download
-                  className="w-full flex items-center justify-center gap-2 p-2.5 rounded bg-red-900/40 text-red-400 hover:bg-red-900/60 border border-red-900/50 transition-colors text-xs font-bold tracking-wider"
-                >
-                  📄 PDF RAPORU AL
-                </a>
-                <a
-                  href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/export/${activeScanId}/csv`}
-                  download
-                  className="w-full flex items-center justify-center gap-2 p-2.5 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 border border-emerald-900/50 transition-colors text-xs font-bold tracking-wider"
-                >
-                  📊 CSV OLARAK DIŞA AKTAR
-                </a>
-                
+              {/* ── YENİ: Scan in Progress Indicator ───────────────────────── */}
+              <div className={`p-4 rounded-lg border transition-all duration-500 
+                ${isScanning ? "bg-blue-950/20 border-blue-900/50" : 
+                  (scanError ? "bg-red-950/20 border-red-900/50" : "bg-emerald-950/20 border-emerald-900/50")}
+              `}>
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    {isScanning ? (
+                      <div className="relative flex items-center justify-center">
+                        <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                        <div className="absolute w-5 h-5 border-2 border-cyan-400 border-b-transparent rounded-full animate-[spin_2s_linear_infinite_reverse] opacity-50"></div>
+                      </div>
+                    ) : (
+                      <div className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 
+                        ${scanError ? "bg-red-500/20 border-red-500" : "bg-emerald-500/20 border-emerald-500"}`}>
+                        <span className={`text-[10px] font-black ${scanError ? "text-red-400" : "text-emerald-400"}`}>
+                          {scanError ? "✕" : "✓"}
+                        </span>
+                      </div>
+                    )}
+                    <h3 className={`text-xs font-bold uppercase tracking-widest 
+                      ${isScanning ? "text-blue-400 animate-pulse" : (scanError ? "text-red-400" : "text-emerald-400")}`}>
+                      {isScanning ? "Scanning In Progress" : (scanError ? "Scan Complete (Failed)" : "Scan Complete")}
+                    </h3>
+                  </div>
+                  <p className="text-[10px] text-neutral-400 font-mono leading-relaxed">
+                    {isScanning 
+                      ? "Deep Vulnerability Scan (Nuclei/Amass) is currently running in the background. Nodes will populate in real-time."
+                      : (scanError 
+                          ? "Target resolution failed or an error occurred during the background scan. Please check your input." 
+                          : "All automated background OSINT and vulnerability scans have successfully finished.")}
+                  </p>
+                </div>
+              </div>
+
+              {/* ── YENİ TASARIM: Export Buttons ────────────────────────────────────────────── */}
+              <div className="pt-5 mt-4 border-t border-slate-800/60">
+                <p className="text-[10px] font-bold tracking-widest uppercase text-slate-500 mb-3 flex items-center gap-2">
+                  Dışa Aktarım (Export)
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <a
+                    href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/export/${activeScanId}/pdf`}
+                    download
+                    className="group relative flex flex-col items-center justify-center gap-2 p-3 rounded-lg bg-gradient-to-br from-red-950/40 to-slate-900/40 hover:from-red-900/40 hover:to-red-950/60 border border-red-900/30 hover:border-red-500/50 transition-all duration-300 shadow-sm hover:shadow-[0_0_15px_rgba(239,68,68,0.15)] overflow-hidden"
+                  >
+                    <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-red-500/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <FileText className="w-5 h-5 text-red-400 group-hover:scale-110 transition-transform duration-300" />
+                    <span className="text-[10px] font-bold text-slate-300 group-hover:text-red-300 transition-colors tracking-wide">PDF RAPOR</span>
+                  </a>
+
+                  <a
+                    href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/export/${activeScanId}/csv`}
+                    download
+                    className="group relative flex flex-col items-center justify-center gap-2 p-3 rounded-lg bg-gradient-to-br from-emerald-950/40 to-slate-900/40 hover:from-emerald-900/40 hover:to-emerald-950/60 border border-emerald-900/30 hover:border-emerald-500/50 transition-all duration-300 shadow-sm hover:shadow-[0_0_15px_rgba(16,185,129,0.15)] overflow-hidden"
+                  >
+                    <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <FileSpreadsheet className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform duration-300" />
+                    <span className="text-[10px] font-bold text-slate-300 group-hover:text-emerald-300 transition-colors tracking-wide">CSV VERİSİ</span>
+                  </a>
+                </div>
+              </div>
+              
+              <div className="space-y-2 mt-2">
                 {/* ── FOCUS MODE BUTTON ── */}
                 <button
                   onClick={() => setIsFocusMode(!isFocusMode)}
@@ -237,6 +354,18 @@ function WorkspaceContent() {
                   }
                 >
                   🎯 Odak Modu
+                </button>
+
+                {/* ── KILL-CHAIN MODE BUTTON ── */}
+                <button
+                  onClick={() => setIsKillChainMode(!isKillChainMode)}
+                  className={
+                    isKillChainMode
+                      ? "w-full mt-2 bg-red-950 text-red-400 border border-red-500 py-2 rounded shadow-[0_0_15px_rgba(239,68,68,0.4)] transition-all font-semibold tracking-wide flex items-center justify-center gap-2"
+                      : "w-full mt-2 bg-transparent text-slate-400 border border-slate-600 py-2 rounded hover:text-red-300 hover:border-red-900/50 transition-colors tracking-wide flex items-center justify-center gap-2"
+                  }
+                >
+                  ☠️ Kill-Chain Path
                 </button>
               </div>
             </div>
@@ -286,6 +415,7 @@ function WorkspaceContent() {
             payload={graphPayload ?? {}}
             onNodeClick={handleNodeClick}
             isFocusMode={isFocusMode}
+            isKillChainMode={isKillChainMode}
             blastRadiusNode={blastRadiusNode}
             timelineDate={timelineDate}
           />
@@ -293,7 +423,7 @@ function WorkspaceContent() {
 
         {/* ── TIME-TRAVEL SLIDER UI ── */}
         {activeScanId && timelineBounds && (
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-2xl z-40">
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-[90%] md:w-full max-w-2xl z-40">
             <div className="bg-black/60 backdrop-blur-md border border-slate-800 p-4 rounded-xl shadow-[0_0_30px_rgba(0,0,0,0.8)] flex flex-col gap-2">
               <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 tracking-widest uppercase">
                 <span>İlk Keşif: {new Date(timelineBounds.min).toLocaleDateString()}</span>
@@ -336,7 +466,7 @@ function WorkspaceContent() {
 
         {/* ── RIGHT PANEL ─────────────────────────────────────────────────── */}
         {isPanelOpen && selectedNodeId && (
-          <aside className="absolute right-0 top-0 h-full w-80 z-50 shadow-2xl">
+          <aside className="absolute right-0 top-0 h-full w-full md:w-[340px] z-50 shadow-[-10px_0_30px_rgba(0,0,0,0.5)] transition-all animate-in slide-in-from-right-8 duration-300">
             <NodeContextPanel
               payload={toContextPayload(graphPayload)}
               selectedNodeId={selectedNodeId}
@@ -352,6 +482,9 @@ function WorkspaceContent() {
             />
           </aside>
         )}
+
+        {/* ── CHAT COPILOT ─────────────────────────────────────────────────── */}
+        <ChatCopilot activeScanId={activeScanId} />
       </main>
     </div>
   );

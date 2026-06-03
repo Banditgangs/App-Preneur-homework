@@ -37,11 +37,22 @@ async def create_target_endpoint(
     Yeni hedef ekler ve zincir OSINT taramasını Celery kuyruğuna (arka plana) gönderir.
     Kullanıcı arayüzü asla beklemez (Timeout yemez), anında yanıt alır.
     """
+    domain = target_in.target_value
+
+    from sqlalchemy.future import select
+    from models.osint import Target
+    
+    # Hedef zaten var mı kontrol et (Duplicate/Race Condition Önlemi)
+    result = await db.execute(select(Target).where(Target.target_value == domain))
+    existing_target = result.scalars().first()
+    
+    if existing_target:
+        logger.info(f"[API] Hedef zaten sistemde mevcut. Çift tarama başlatılmıyor: {domain} ({existing_target.id})")
+        return existing_target
+
     # ── 1. Domain kaydet ─────────────────────────────────────────────────────
     target = await crud.create_target(db=db, target_in=target_in)
     logger.info(f"[API] Hedef veritabanına kaydedildi: {target.target_value} ({target.id})")
-
-    domain = target.target_value
 
     # ── 2. AĞIR İŞİ ARKA PLANA (CELERY'E) GÖNDER! ────────────────────────────
     # .delay() komutu bu görevi anında Redis kuyruğuna atar ve API'yi serbest bırakır.
@@ -210,6 +221,26 @@ async def get_target_graph(
     """(Eski) REST tabanlı OSINT graf verisi."""
     return await _generate_graph_payload(target_id, db)
 
+# ── GET /api/targets/{target_id}/status ──────────────────────────────────────
+@router.get("/{target_id}/status")
+async def get_target_status(target_id: uuid.UUID):
+    """
+    Fallback polling endpoint for frontend.
+    Returns 'COMPLETED' if active scans are 0, else 'RUNNING'.
+    """
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    redis_client = aioredis.from_url(redis_url)
+    try:
+        val = await redis_client.get(f"active_scans_{target_id}")
+        if val is None or int(val) <= 0:
+            return {"status": "COMPLETED"}
+        return {"status": "RUNNING"}
+    except Exception as e:
+        logger.error(f"[API] Fallback status error: {e}")
+        return {"status": "COMPLETED"} # fallback
+    finally:
+        await redis_client.close()
+
 
 # ── WS /api/targets/ws/{target_id} ───────────────────────────────────────────
 @router.websocket("/ws/{target_id}")
@@ -238,13 +269,29 @@ async def websocket_target_graph(websocket: WebSocket, target_id: uuid.UUID):
     await pubsub.subscribe(channel)
 
     try:
-        # Worker'dan her 'update' sinyali geldiğinde taze DB oturumuyla veriyi fırlat
+        # Worker'dan her 'update', 'SCAN_COMPLETED' veya 'SCAN_FAILED' sinyali geldiğinde taze DB oturumuyla veriyi fırlat
         async for message in pubsub.listen():
             if message["type"] == "message":
-                async with deps.AsyncSessionLocal() as db:
-                    payload = await _generate_graph_payload(target_id, db)
-                    await websocket.send_json(payload.model_dump())
-                    logger.info(f"[WS] Anlık veri Frontend'e Pushlandı -> {target_id}")
+                data_str = message["data"].decode("utf-8")
+                
+                if data_str == "SCAN_COMPLETED":
+                    await websocket.send_json({"is_scan_completed": True, "has_error": False})
+                    logger.info(f"[WS] Tarama Bitti Sinyali Frontend'e Pushlandı -> {target_id}")
+                
+                elif data_str == "SCAN_FAILED":
+                    # Önce hata düğümünü göndermek için güncel grafiği çekelim
+                    async with deps.AsyncSessionLocal() as db:
+                        payload = await _generate_graph_payload(target_id, db)
+                        await websocket.send_json(payload.model_dump())
+                    # Ardından başarısız bittiğini haber verelim
+                    await websocket.send_json({"is_scan_completed": True, "has_error": True})
+                    logger.info(f"[WS] Tarama Hata Sinyali Frontend'e Pushlandı -> {target_id}")
+                    
+                else:
+                    async with deps.AsyncSessionLocal() as db:
+                        payload = await _generate_graph_payload(target_id, db)
+                        await websocket.send_json(payload.model_dump())
+                        logger.info(f"[WS] Anlık veri Frontend'e Pushlandı -> {target_id}")
 
     except WebSocketDisconnect:
         logger.info(f"[WS] İstemci bağlantıyı kopardı: {target_id}")

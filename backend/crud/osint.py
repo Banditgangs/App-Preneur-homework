@@ -68,3 +68,8 @@ async def create_entity(
     await db.commit()
     await db.refresh(entity)
     return entity
+
+async def get_entity(db: AsyncSession, entity_id: uuid.UUID) -> Entity | None:
+    """Tek bir bulguyu (Entity) ID'ye göre getirir."""
+    result = await db.execute(select(Entity).where(Entity.id == entity_id))
+    return result.scalar_one_or_none()

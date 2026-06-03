@@ -30,6 +30,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     depends_on:
       - db
       - redis
@@ -44,6 +45,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     depends_on:
       - db
       - redis
@@ -59,5 +61,8 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
 volumes:
   postgres_data:
